@@ -1,136 +1,80 @@
-# Copyright (c) 2019, Bosch Engineering Center Cluj and BFMC organizers
-# All rights reserved.
-
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
-import sys
-
-sys.path.append('.')
-
+import cv2 
+import paho.mqtt.client as mqtt
 import time
-import socket
-import struct
-import numpy as np
 
-import cv2
-from threading import Thread
-
-import multiprocessing
-from multiprocessing import Process, Event
-
-from workerprocess import WorkerProcess
+hueMax = 180
+hueLow = 0
+hueHigh = 17
+satLow = 87
+valueLow = 87
 
 
-class CameraReceiver(WorkerProcess):
-    # ===================================== INIT =========================================
-    def __init__(self, inPs, outPs, port):
-        """Process used for debugging. It receives the images from the raspberry and
-        duplicates the perception pipline that is running on the raspberry.
+def on_trackbar(val):
+    global hueLow
+    global hueHigh
+    global satLow
+    global valueLow
 
-        Parameters
-        ----------
-        inPs : list(Pipe)
-            List of input pipes
-        outPs : list(Pipe)
-            List of output pipes
-        """
-        super(CameraReceiver, self).__init__(inPs, outPs)
+    hueLow = cv2.getTrackbarPos("hueLow", 'CVImage')
+    hueHigh = cv2.getTrackbarPos("hueHigh", 'CVImage')
+    satLow = cv2.getTrackbarPos("satLow", 'CVImage')
+    valueLow = cv2.getTrackbarPos("valueLow", 'CVImage')
 
-        self.port = 8080
-        self.serverIp = '192.168.1.4'  # PC ip
+def CarDetection(img):
+    carIsPResent = 0
+    hvs=cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype('uint8')
+    carThreshold = cv2.inRange(hvs, (hueLow, satLow, valueLow), (hueHigh, 255, 255))
+    _, redContours, _ = cv2.findContours(carThreshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-        self.imgSize = (480, 640, 3)
+    for cnt in redContours:
+        if cv2.arcLength(cnt, True) > 200.0:
+            carIsPResent = 1
+            approx = cv2.approxPolyDP(cnt, 0.02*cv2.arcLength(cnt, True), True)
+            cv2.drawContours(img, [approx], 0, (255), 5)
+            x = approx.ravel()[0]
+            y = approx.ravel()[1]
 
-    # ===================================== RUN ==========================================
-    def run(self):
-        """Apply the initializers and start the threads.
-        """
-        self._init_socket()
-        super(CameraReceiver, self).run()
-
-    # ===================================== INIT SOCKET ==================================
-    def _init_socket(self):
-        """Initialize the socket.
-        """
-        self.server_socket = socket.socket()
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.serverIp, self.port))
-
-        self.server_socket.listen(0)
-        self.connection = self.server_socket.accept()[0].makefile('rb')
-
-    # ===================================== INIT THREADS =================================
-    def _init_threads(self):
-        """Initialize the read thread to receive the video.
-        """
-        readTh = Thread(name='StreamReceiving', target=self._read_stream, args=(self.outPs,))
-        self.threads.append(readTh)
-
-    # ===================================== READ STREAM ==================================
-    def _read_stream(self, outPs):
-        """Read the image from input stream, decode it and show it.
-
-        Parameters
-        ----------
-        outPs : list(Pipe)
-            output pipes (not used at the moment)
-        """
-        try:
-            while True:
-                # decode image
-                image_len = struct.unpack('<L', self.connection.read(struct.calcsize('<L')))[0]
-                bts = self.connection.read(image_len)
-
-                # ----------------------- read image -----------------------
-                image = np.frombuffer(bts, np.uint8)
-                image = cv2.imdecode(image, cv2.IMREAD_COLOR)
-                image = np.reshape(image, self.imgSize)
-                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-                # ----------------------- show images -------------------
-                cv2.imshow('Image', image)
-                cv2.waitKey(1)
-        except:
+            cv2.putText(img, "Car", (x, y), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 0))
+        else:
             pass
-        finally:
-            self.connection.close()
-            self.server_socket.close()
+    cv2.putText(img, "CV done", (20, 20), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 0))
+    return img, carThreshold, carIsPResent
 
 
-# ===================================== MAIN =============================================
+
 if __name__ == "__main__":
-    a = CameraReceiver([],[], 2244)
-    a2 = CameraReceiver([],[], 2245)
-    a.start()
-    a2.start()
-    blocker =Event()
-    try:
-        blocker.wait()
-    except KeyboardInterrupt:
-        print("\nCatching a KeyboardInterruption exception! Shutdown all processes.")
-        a.terminate()
-    a2.terminate()
-    a.join()
-    a2.join()
+    capture = cv2.VideoCapture('rtsp://192.168.1.4:8080/h264_ulaw.sdp')
+    client = mqtt.Client()
+
+    client.connect("test.mosquitto.org", 1883, 60)
+    client.loop_start()
+    ttime = 0
+    cv2.namedWindow('CVImage')
+    cv2.createTrackbar("hueLow", 'CVImage' , 0, hueMax, on_trackbar)
+    cv2.createTrackbar("hueHigh", 'CVImage' , 17, hueMax, on_trackbar)
+    cv2.createTrackbar("satLow", 'CVImage' , 87, 255, on_trackbar)
+    cv2.createTrackbar("valueLow", 'CVImage' , 87, 255, on_trackbar)
+        
+    while True:
+        ret, frame = capture.read()
+        cv2.imshow('Image', frame)
+        cv2.waitKey(1)
+        carImg, tImg, carIsPResent = CarDetection(frame)
+        cv2.imshow('CVImage', carImg)
+        cv2.waitKey(1)
+        cv2.imshow('tempImg', tImg)
+        cv2.waitKey(1)
+
+
+        if time.time() - ttime > 1:
+            ttime = time.time()
+            t = time.localtime()
+            current_time = time.strftime("%H:%M:%S", t)
+            if carIsPResent:
+                payload = current_time + ": Car is present, change lamp state!"
+            else:
+                payload = current_time + ": The road is free, RED LAMP!"
+            client.publish("SzenzorHW/IPCamStreamer", payload)
+
+
+
